@@ -1,342 +1,187 @@
 ---
 name: word-format
-description: "Use this skill whenever the user wants to create a professionally formatted Word (.docx) document with Chinese typography standards — including 字体/字号/缩进/行距/表格 specifications. Triggers: mentions of 宋体/黑体/楷体, 字号 (小四/三号/etc.), 首行缩进, 课题报告/政府公文/学术论文, or any request to produce a .docx with specific formatting. Also use when the user provides a reference Word file and wants to generate matching-style content, or when content contains LaTeX math formulas that need to be pasted into Word. Do NOT use for PDF, PowerPoint, Excel, or plain Markdown output."
+description: 把一份参考 Word (.docx) 的排版样式（字体/字号/缩进/行距/对齐/页面设置/样式表/主题）复刻到新内容上。当用户要求「按某个 .docx 模板排版」「在已有文档基础上续写」「修复后半部分排版混乱」「统一字体字号缩进」等场景时使用。仅在 macOS 工作（依赖 Microsoft Word + 浏览器 + System Events 的 UI 自动化）。
 ---
 
-# Word Format Skill — 中文排版 Word 文档生成
+# word-format
 
-## 概述
+把参考 Word 文档的排版**视觉一致地**复刻到新内容上。
+工作方式：**直接在原件 HTML 上增删改文字**，再让浏览器渲染并把富文本送进 Word。
 
-本 skill 负责将用户的内容和排版要求直接生成格式完整的 `.docx` 文件，全程无需浏览器或手动粘贴。
-
-**技术路径：**
-```
-用户需求 → 分析排版规格 → 生成 docx-js 脚本 → Node.js 执行 → 输出 .docx → open 打开
-```
-
----
-
-## 工作流决策树
+## 工作原理：HTML Bridge
 
 ```
-用户提供了参考 .docx 文件？
-├─ 是 → 运行 scripts/read_reference.py 提取样式 → 匹配其排版生成新内容
-└─ 否 → 用户描述了排版规格？
-         ├─ 是 → 按规格生成
-         └─ 否 → 按文档类型使用预设（见下方预设模板）
+参考 .docx
+    │  ① docx_to_html.py
+    ▼
+Word Filtered HTML（原件，所有样式 inline）
+    │  ② Claude 在原件上增删改文本（保留所有 inline style）
+    ▼
+edited.html
+    │  ③ render_and_paste.sh
+    │     浏览器渲染 → Cmd+A/C → Word 粘贴 → 保存
+    ▼
+最终 .docx
 ```
 
----
+**步骤 ③ 有两种模式，决定能保留多少模板格式：**
 
-## 第一步：收集信息
+| 模式 | 命令 | 能保留 |
+|---|---|---|
+| **B. 续写（推荐）** | `--append-to <reference.docx>` | **100% 模板格式**：页面设置、样式表、主题、页眉页脚、字体表 + 字符级排版 |
+| A. 新建 | （不带 `--append-to`） | 仅字符/段落级排版（字体/字号/缩进/行距/对齐） |
 
-向用户确认以下内容（未提供时询问）：
+> **想 100% 保留模板格式 → 必须用模式 B。**
+> 浏览器粘贴管线本身只能传字符级直接属性，不传`@page`/样式表/theme1.xml。
+> 模式 B 的诀窍：**不靠粘贴管线传这些**——直接复制原 .docx 副本作为承载文档，新内容用 Cmd+A → → → Cmd+V 续写到末尾，原文档的页面设置 / 样式表 / 主题原封不动地继承下来。
 
-1. **文档类型**：课题报告 / 政府公文 / 学术论文 / 简历 / 其他
-2. **排版规格**：字体、字号、缩进、行距（可参考下方中文字号表）
-3. **是否有参考文件**：现有 .docx 文件路径（用于匹配已有排版）
-4. **是否含数学公式**：含 LaTeX 公式时需附加 VBA 宏说明
-5. **输出路径**：默认输出到 `~/Desktop/output.docx`
+## 为什么不直接让 Word 打开生成的 HTML 再另存为 .docx
 
----
+走「Word 打开 HTML → 另存 docx」的是 Word 的 **Open Web Page 遗留导入器**，对通用 HTML 行为保守诡异：
 
-## 第二步：读取参考文件（如有）
+- 字体回退链评估方式与浏览器不同，`font-family: '宋体', SimSun, serif` 可能落到默认字体
+- `text-indent`、`line-height` 在导入时会被 clamp 到 Word 默认范围
+- `<body>` 的 padding/margin 不严格遵守 CSS spec
+
+而**当前方案：浏览器渲染 → 系统剪贴板 → Word 粘贴**，走的是 Word 的「粘贴外部富文本」管线：
+
+- 浏览器是严格的 CSS 渲染器，**所见即所得**
+- 字体在浏览器渲染那一刻就钉死，剪贴板里携带的是确定的字体名
+- Word 粘贴管线把剪贴板里的 HTML+RTF **直接展开成段落直接属性**，跳过 HTML 导入器
+
+对 inline-CSS HTML 而言，这是中间损失最小的链路。
+
+## 环境要求
+
+- **OS**: macOS（脚本依赖 AppleScript / System Events）
+- **Microsoft Word for Mac**（`/Applications/Microsoft Word.app`）
+- **浏览器**: Google Chrome（首选）或 Safari
+- **Python 3**：系统自带，无第三方依赖
+- **首次运行须开启系统授权**：
+  - 系统设置 → 隐私与安全性 → **自动化**：勾选允许「终端宿主进程（Terminal / iTerm / Ghostty / Claude Code）」控制 Microsoft Word、Chrome（或 Safari）、System Events
+  - 系统设置 → 隐私与安全性 → **辅助功能**：启用同一个宿主进程
+
+环境检查：
+```bash
+bash "${SKILL_DIR}/scripts/verify_env.sh"
+```
+
+## ⚠️ 给 Claude 的硬约束 prompt（编辑 HTML 时必须遵守）
+
+> 请帮我生成一段**专门用于复制粘贴到 Word 文档**的 HTML 排版代码。
+> 核心要求如下：
+>
+> 1. **必须采用"行内样式"（Inline CSS）的写法**：请把所有的样式规则（如字体、字号、间距）直接写在每一个 HTML 标签的 `style` 属性里面，不要使用 `<style>` 标签或者外部 CSS，以确保 Word 能够完整读取格式。
+> 2. **严格使用"pt"（磅）作为单位**：请务必把字体大小的单位设定为 `pt`，绝对不要使用 `px`，以防止因屏幕缩放而导致字号出现误差。
+> 3. **强制表格居中**：请不要使用 CSS 的 `margin: auto`，必须直接在 `<table>` 标签上添加 `align="center"` 属性（例如 `<table align="center" ...>`），这是 Word 唯一能识别的居中方式。
+> 4. **防止页面偏移**：请确保 `<body>` 标签没有 padding 或 margin，防止复制后产生左侧缩进。
+> 5. **宽度控制**：大表格请设定 `style="width:440pt"`（适应 A4 版心），小表格请设定 `style="width:auto"`。
+
+### 在"就地编辑原件"模式下的实操含义
+
+- **核心动作**：Claude 用 `Read` 读原件 → `cp` 复制为 `edited.html` → 用 `Edit` 工具**只改文字节点的内容**。所有 inline `style`、嵌套结构、`<p>`/`<span>`/`<table>` 标签**原样保留**。
+- **第 1、2、5 条**：原件本来就是 Word 自己导出，已经符合（inline + pt + 表格宽度合理）。**只要不引入新的 `<style>` 块、不引入 px、不引入 `margin:auto`**，就是合规。
+- **第 3 条**：如果原件里某个 `<table>` 视觉上居中但缺 `align="center"`，编辑时给它补上。
+- **第 4 条**：原件 `<body>` 通常是 `<body lang=ZH-CN style='...'>`，**编辑时把 style 改成 / 补上 `margin:0;padding:0;`**。
+- **额外禁止**：在 HTML 文本节点里写 Markdown 语法（`**加粗**` / `# 标题` / `- 列表`）；凭空写原件中没出现过的字体名。
+
+## 完整流程
+
+### 步骤 1：导出参考 .docx 为 HTML
 
 ```bash
-python3 skills/word-format/scripts/read_reference.py <path/to/reference.docx>
+python3 "${SKILL_DIR}/scripts/docx_to_html.py" "/path/to/reference.docx"
+# 产物：~/Library/Caches/word-format-skill/<basename>.html
 ```
 
-脚本会提取：字体名称、字号、段落样式、缩进、行距，打印为结构化摘要供后续生成使用。
+驱动 Word 自身用「另存为 → 筛选过的网页」导出。Filtered HTML 把字体、字号、缩进、行距等全部以 inline CSS 写进每个标签——这是唯一能 100% 保留 Word 排版信息的文本格式。
 
----
+### 步骤 2：Claude 在原件上增删改
 
-## 第三步：生成 docx-js 脚本
+按场景选编辑方式：
 
-### 安装依赖（首次使用）
+#### 场景 ★ 续写（最常用，与模式 B 配套）
+
+只产出**要追加的新内容**，从原件里复制一段同类型段落（含完整 inline style），改文字。
 
 ```bash
-npm install -g docx
+# Claude 选一段原件中已有的同类型段落作为模板段，只产出"待追加内容"：
+cat > ~/Library/Caches/word-format-skill/append.html <<'HTML'
+<p style="margin:0;font-family:'宋体';font-size:12.0pt;text-indent:24.0pt;line-height:150%;text-align:justify;">
+新增的正文段落，照抄原件 inline style 写法，只换文字内容。
+</p>
+<p style="...">…</p>
+HTML
 ```
 
-### 中文字号对照表（docx-js size 单位为半点：1pt = 2）
+> 这种 `append.html` 不需要完整 `<html>/<body>` 外壳——剪贴板复制的是渲染后的富文本，浏览器会把零散段落正常渲染。但若想严谨，可以包一层 `<html><body style="margin:0;padding:0;">…</body></html>`。
 
-| 中文字号 | pt 值 | docx-js size |
-|---------|-------|-------------|
-| 初号    | 42pt  | 84  |
-| 小初    | 36pt  | 72  |
-| 一号    | 26pt  | 52  |
-| 小一    | 24pt  | 48  |
-| 二号    | 22pt  | 44  |
-| 小二    | 18pt  | 36  |
-| 三号    | 16pt  | 32  |
-| 小三    | 15pt  | 30  |
-| 四号    | 14pt  | 28  |
-| 小四    | 12pt  | 24  |
-| 五号    | 10.5pt| 21  |
-| 小五    | 9pt   | 18  |
-
-### 中文字体对照表
-
-| 中文名称   | docx-js font 值         |
-|-----------|------------------------|
-| 宋体       | `"SimSun"`             |
-| 黑体       | `"SimHei"`             |
-| 楷体       | `"KaiTi"`              |
-| 仿宋       | `"FangSong"`           |
-| 微软雅黑   | `"Microsoft YaHei"`    |
-| 华文宋体   | `"STSong"`             |
-| 华文楷体   | `"STKaiti"`            |
-| 华文仿宋   | `"STFangsong"`         |
-
-### 首行缩进计算（首行缩进2字符 = 2 × pt × 20 DXA）
-
-| 字号  | 首行缩进2字符 (DXA) |
-|-------|-----------------|
-| 小四 (12pt) | 480 |
-| 五号 (10.5pt) | 420 |
-| 四号 (14pt) | 560 |
-
-### 行距设置
-
-| 行距类型     | docx-js spacing            |
-|------------|---------------------------|
-| 单倍行距     | `{ line: 240, lineRule: "auto" }` |
-| 1.5 倍行距   | `{ line: 360, lineRule: "auto" }` |
-| 2 倍行距     | `{ line: 480, lineRule: "auto" }` |
-| 固定值 xx 磅 | `{ line: xx * 20, lineRule: "exact" }` |
-
-### A4 页面设置（中文标准）
-
-```javascript
-properties: {
-  page: {
-    size: { width: 11906, height: 16838 },  // A4: 11906 × 16838 DXA
-    margin: {
-      top: 1440,     // 2.54cm
-      bottom: 1440,  // 2.54cm
-      left: 1800,    // 3.17cm（政府公文标准）
-      right: 1800,
-    }
-  }
-}
-```
-
----
-
-## docx-js 脚本模板
-
-运行方式：
-```bash
-NODE_PATH=$(npm root -g) node output_script.js
-```
-
-### 标准课题报告模板
-
-```javascript
-const { Document, Packer, Paragraph, TextRun, AlignmentType, LevelFormat } = require('docx');
-const fs = require('fs');
-
-const doc = new Document({
-  styles: {
-    paragraphStyles: [
-      // 标题：宋体三号（16pt）加粗居中
-      {
-        id: "DocTitle", name: "Doc Title", basedOn: "Normal",
-        run: { size: 32, bold: true, font: "SimSun" },
-        paragraph: { alignment: AlignmentType.CENTER, spacing: { before: 240, after: 240 } }
-      },
-      // 一级标题：宋体小三（15pt）加粗
-      {
-        id: "Heading1CN", name: "Heading 1 CN", basedOn: "Normal",
-        run: { size: 30, bold: true, font: "SimSun" },
-        paragraph: { spacing: { before: 240, after: 120 } }
-      },
-      // 二级标题：宋体四号（14pt）加粗
-      {
-        id: "Heading2CN", name: "Heading 2 CN", basedOn: "Normal",
-        run: { size: 28, bold: true, font: "SimSun" },
-        paragraph: { spacing: { before: 180, after: 80 } }
-      },
-      // 正文：宋体小四（12pt）首行缩进2字符，1.5倍行距
-      {
-        id: "BodyCN", name: "Body CN", basedOn: "Normal",
-        run: { size: 24, font: "SimSun" },
-        paragraph: {
-          indent: { firstLine: 480 },
-          spacing: { line: 360, lineRule: "auto" }
-        }
-      },
-    ]
-  },
-  sections: [{
-    properties: {
-      page: {
-        size: { width: 11906, height: 16838 },
-        margin: { top: 1440, bottom: 1440, left: 1800, right: 1800 }
-      }
-    },
-    children: [
-      new Paragraph({ style: "DocTitle", children: [new TextRun("课题报告标题")] }),
-      new Paragraph({ style: "Heading1CN", children: [new TextRun("一、引言")] }),
-      new Paragraph({ style: "BodyCN", children: [new TextRun("正文内容在此处填写。")] }),
-      new Paragraph({ style: "Heading1CN", children: [new TextRun("二、研究方法")] }),
-      new Paragraph({ style: "BodyCN", children: [new TextRun("第二段正文在此处填写。")] }),
-    ]
-  }]
-});
-
-Packer.toBuffer(doc).then(buf => {
-  fs.writeFileSync(process.argv[2] || "output.docx", buf);
-  console.log("生成成功：" + (process.argv[2] || "output.docx"));
-});
-```
-
----
-
-## 第四步：执行并打开
+#### 场景 整文重写（与模式 A 配套）
 
 ```bash
-NODE_PATH=$(npm root -g) node /tmp/word_format_gen.js ~/Desktop/output.docx
-open ~/Desktop/output.docx
+cp ~/Library/Caches/word-format-skill/<basename>.html \
+   ~/Library/Caches/word-format-skill/<basename>.edited.html
 ```
 
----
+然后用 `Edit` 工具就地修改 `<basename>.edited.html`：**只动文本节点的内容**，所有标签 / `style` / 嵌套结构原样保留；同时把 `<body ...>` 的 style 改成包含 `margin:0;padding:0;`。
 
-## 数学公式处理（含 LaTeX）
+### 步骤 3：渲染 + 复制 + 粘贴 + 保存
 
-当文档包含数学公式时：
+#### 模式 B：续写（推荐，100% 保留模板）
 
-### 生成策略
-在 docx-js 脚本中，将所有公式保留为 **未渲染的原始 LaTeX** 格式：
-- 行内公式用 `$...$` 包裹
-- 行间公式用 `$$...$$` 包裹
-
-例如：
-```javascript
-new Paragraph({ style: "BodyCN", children: [
-  new TextRun("设函数 $f(x) = x^2 + 2x + 1$，则其导数为 $f'(x) = 2x + 2$。"),
-]})
-```
-
-### VBA 宏（用户在 Word 中运行一次）
-
-生成文档后，告知用户在 Word 中执行以下操作：
-
-1. 按 `Alt + F11` 打开 VBA 编辑器
-2. 选择「插入」→「模块」
-3. 粘贴以下代码，按 F5 运行：
-
-```vba
-Sub LatexToWordMath()
-    Dim rng As Range
-    Dim mathRng As Range
-    Application.ScreenUpdating = False
-
-    ' 处理双美元符号 $$ （行间公式）
-    Set rng = ActiveDocument.Content
-    With rng.Find
-        .ClearFormatting
-        .Text = "\$\$*\$\$"
-        .MatchWildcards = True
-        Do While .Execute
-            Set mathRng = rng.Duplicate
-            mathRng.End = mathRng.End
-            mathRng.MoveEnd Unit:=wdCharacter, Count:=-2
-            mathRng.Start = mathRng.Start + 2
-            rng.Text = mathRng.Text
-            ActiveDocument.OMaths.Add rng
-            rng.OMaths(1).BuildUp
-            rng.Collapse wdCollapseEnd
-        Loop
-    End With
-
-    ' 处理单美元符号 $ （行内公式）
-    Set rng = ActiveDocument.Content
-    With rng.Find
-        .ClearFormatting
-        .Text = "\$*\$"
-        .MatchWildcards = True
-        Do While .Execute
-            Set mathRng = rng.Duplicate
-            If Len(mathRng.Text) > 2 Then
-                Dim cleanText As String
-                cleanText = Mid(mathRng.Text, 2, Len(mathRng.Text) - 2)
-                rng.Text = cleanText
-                ActiveDocument.OMaths.Add rng
-                rng.OMaths(1).BuildUp
-            End If
-            rng.Collapse wdCollapseEnd
-        Loop
-    End With
-
-    Application.ScreenUpdating = True
-    MsgBox "公式转换完成！"
-End Sub
-```
-
----
-
-## 预设模板：常见文档类型
-
-### 政府公文（国标）
-- 标题：宋体二号（22pt）加粗居中
-- 正文：仿宋四号（14pt）首行缩进2字符
-- 页边距：上下各 3.7cm，左右各 2.8cm
-
-### 学术论文
-- 标题：宋体三号（16pt）加粗居中
-- 摘要/关键词：宋体五号（10.5pt）
-- 正文：宋体小四（12pt）首行缩进2字符，1.5倍行距
-- 参考文献：宋体五号（10.5pt）
-
-### 课题报告
-- 标题：宋体三号（16pt）加粗居中
-- 一级标题：宋体小三（15pt）加粗
-- 二级标题：宋体四号（14pt）加粗
-- 正文：宋体小四（12pt）首行缩进2字符，1.5倍行距
-
-### 简历
-- 姓名：黑体二号（22pt）居中
-- 节标题：黑体四号（14pt）加粗
-- 正文：宋体小四（12pt）
-
----
-
-## 使用注意
-
-以下内容来自 [docx 官方 demo](https://github.com/dolanmiu/docx/tree/master/demo) 和 OOXML 规范的实测总结：
-
-**段落与换行**
-OOXML 的 `<w:p>` 是段落的基本单位，`<w:t>` 内的 `\n` 不会产生换行效果。
-每个独立段落必须用单独的 `new Paragraph({...})` 表示（见 [demo/1-basic.ts](https://github.com/dolanmiu/docx/blob/master/demo/1-basic.ts)）。
-
-**列表**
-docx 的列表通过 `numbering` config 实现（见 [demo/8-header-footer.ts](https://github.com/dolanmiu/docx/blob/master/demo/8-header-footer.ts) 中的 `LevelFormat.DECIMAL` 用法）。
-直接在 `TextRun` 里写 `•` 或 `※` 不会生成真正的 Word 列表结构，无法被 Word 识别为有序/无序列表。
-
-**分页**
-OOXML 规范要求 `<w:br w:type="page"/>` 必须在 `<w:r>` 内，而 `<w:r>` 必须在 `<w:p>` 内。
-docx-js 对应写法：`new Paragraph({ children: [new PageBreak()] })`，不能单独使用 `new PageBreak()`。
-
-**图片**
-`ImageRun` 的 `type` 字段是 docx-js TypeScript 类型定义中的必填项（见 [demo/5-images.ts](https://github.com/dolanmiu/docx/blob/master/demo/5-images.ts)），需明确指定 `"png"` / `"jpg"` / `"jpeg"` 等。
-
-**表格宽度**
-官方 demo [4-basic-table.ts](https://github.com/dolanmiu/docx/blob/master/demo/4-basic-table.ts) 在 `Table` 上设置 `columnWidths`，同时在每个 `TableCell` 上设置 `width`。
-单位统一使用 `WidthType.DXA`（1440 DXA = 1 英寸）。
-
-**执行方式（macOS/Linux 全局安装场景）**
-全局安装的 npm 包默认不在 `NODE_PATH` 内，需显式指定：
 ```bash
-NODE_PATH=$(npm root -g) node your_script.js
+bash "${SKILL_DIR}/scripts/render_and_paste.sh" \
+    --append-to "/path/to/reference.docx" \
+    ~/Library/Caches/word-format-skill/append.html \
+    ~/Desktop/最终输出.docx
 ```
 
----
+脚本顺序：
+1. 把 `reference.docx` 复制为 `~/Desktop/最终输出.docx`
+2. 浏览器加载 `append.html`，等 2.5s 字体加载完
+3. 在浏览器里 Cmd+A / Cmd+C
+4. Word 打开 `~/Desktop/最终输出.docx`（即副本，原模板设置全在）
+5. 等 Word 成为前台进程
+6. Cmd+A → 右方向键（光标塌缩到文档末尾）→ Cmd+V（粘到末尾）
+7. `save active document`（不是 save as，副本已命名）
+8. 把焦点还给运行前的前台应用
 
-## 依赖
+#### 模式 A：新建空白文档
 
-| 工具 | 安装方式 | 用途 |
-|------|---------|------|
-| Node.js | [nodejs.org](https://nodejs.org) | 运行 docx-js |
-| docx (npm) | `npm install -g docx` | Word 文档生成 |
-| Python 3 | 系统内置 | 读取参考 .docx 样式 |
+```bash
+bash "${SKILL_DIR}/scripts/render_and_paste.sh" \
+    ~/Library/Caches/word-format-skill/<basename>.edited.html \
+    ~/Desktop/最终输出.docx
+```
+
+脚本顺序：
+1. 浏览器加载 `<basename>.edited.html`，等 2.5s
+2. Cmd+A / Cmd+C
+3. Word 新建空白文档
+4. Cmd+V 粘贴
+5. `save as` 为指定 `.docx`
+6. 把焦点还给运行前的前台应用
+
+⚠️ **脚本运行期间（约 5~7 秒）不要使用键盘 / 鼠标**，UI 自动化在跑。
+
+## 故障排查
+
+| 症状 | 原因 / 处理 |
+|------|------|
+| 步骤 1 报 `-1728` | Word 自动化授权未开 → 系统设置 → 隐私与安全性 → 自动化；或 Word 处于残留状态（脚本会自动 quit + retry 一次） |
+| 步骤 3 键盘事件没生效（错误码 1002） | 辅助功能权限未开 → 系统设置 → 隐私与安全性 → 辅助功能 → 把宿主进程加入并打开开关 |
+| 模式 B 续写后页面设置仍是 Word 默认 | `--append-to` 没指对源 docx；或 Word 把粘贴内容放进了新节并应用了节属性，检查目标 docx 是否仍是单节 |
+| 粘贴后字体变 Word 默认中文 | 编辑时引入了原件没有的字体名 |
+| 段落整体左侧出现空白 | `<body>` 没设 `margin:0;padding:0;`（违反契约 4） |
+| 字号在 Word 里轻微偏移 | 出现了 `px` 单位（违反契约 2） |
+| 表格不居中 | `<table>` 缺 `align="center"`（违反契约 3） |
+| 出现 Markdown 文本 `**` `#` | 编辑时夹带了 Markdown，必须用 HTML 标签 |
+| 粘贴后 Word 文档为空白 | Cmd+V 在 Word 还没拿到键盘焦点时落空；脚本里已通过"等待 frontmost = Microsoft Word"修复，若仍出现可加大 `delay` |
+
+## 核心原则
+
+> **不要擅自提取格式、不要重写片段。**
+> Word Filtered HTML 是"全 inline 化的可渲染页面"，最忠实的复刻方式就是**保留它所有的样式标签，只换文字**。
+>
+> **想 100% 保留模板（含页面设置 / 样式表 / 主题）→ 用续写模式（`--append-to`），让原 .docx 副本承载，新内容粘到末尾。**
+> 这是 AI 生成 HTML 进入 Word 时损失最小的链路。

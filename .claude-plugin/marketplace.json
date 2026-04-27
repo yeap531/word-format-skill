@@ -1,16 +1,16 @@
 {
   "name": "word-format-skill",
   "owner": {
-    "name": "word-format-skill contributors"
+    "name": "yeap531"
   },
   "metadata": {
-    "description": "AI-powered Chinese Word document formatter — generate properly formatted .docx files with correct 字体/字号/缩进/行距 directly from Claude, no browser or manual paste required.",
-    "version": "1.0.0"
+    "description": "Replicate a reference Word .docx's full typography (字体/字号/缩进/行距/页面设置/样式表/主题/页眉页脚) onto new content via the HTML bridge: drive Word + a browser through AppleScript on macOS, render Filtered HTML in the browser, push HTML+RTF through the system clipboard, paste into Word. Append-mode preserves the reference doc 100%.",
+    "version": "2.0.0"
   },
   "plugins": [
     {
       "name": "word-format",
-      "description": "Generate professionally formatted Chinese Word (.docx) documents directly from Claude. Supports Chinese typography standards (宋体/黑体/楷体, 字号, 首行缩进, 行距), reference document style matching, math formula handling via LaTeX+VBA, and common presets for 课题报告/政府公文/学术论文.",
+      "description": "Copy a reference Word .docx's complete typographic profile onto new content. Two modes: append (recommended) preserves page setup, style table, theme, headers/footers, font table verbatim by piggybacking on a copy of the reference doc; new-doc mode preserves only character/paragraph properties. macOS only — requires Microsoft Word for Mac + Chrome or Safari + Accessibility/Automation TCC permissions.",
       "source": "./",
       "strict": false,
       "skills": [
